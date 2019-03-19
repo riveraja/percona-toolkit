@@ -897,6 +897,10 @@ find_my_cnf_file() {
    echo "$cnf_file"
 }
 
+collect_session_variables() {
+   $CMD_MYSQL $EXT_ARGV -ss -e 'SHOW SESSION VARIABLES'
+}
+
 collect_mysql_variables () {
    $CMD_MYSQL $EXT_ARGV -ss  -e 'SHOW /*!40100 GLOBAL*/ VARIABLES'
 }
@@ -1032,6 +1036,7 @@ collect_mysqld_executables () {
 collect_mysql_info () {
    local dir="$1"
 
+   collect_session_variables   > "$dir/mysql-session-variables"
    collect_mysql_variables     > "$dir/mysql-variables"
    collect_mysql_status        > "$dir/mysql-status"
    collect_mysql_databases     > "$dir/mysql-databases"
@@ -2358,11 +2363,11 @@ report_mysql_summary () {
    section_percona_server_features "$dir/mysql-variables"
 
    section "Percona XtraDB Cluster"
-   local has_wsrep="$(get_var "wsrep_on" "$dir/mysql-variables")"
+   local has_wsrep="$(get_var "wsrep_on" "$dir/mysql-session-variables")"
    if [ -n "${has_wsrep:-""}" ]; then
-      local wsrep_on="$(feat_on "$dir/mysql-variables" "wsrep_on")"
+      local wsrep_on="$(feat_on "$dir/mysql-session-variables" "wsrep_on")"
       if [ "${wsrep_on:-""}" = "Enabled" ]; then
-         section_percona_xtradb_cluster "$dir/mysql-variables" "$dir/mysql-status"
+         section_percona_xtradb_cluster "$dir/mysql-session-variables" "$dir/mysql-status"
       else
          name_val "wsrep_on" "OFF"
       fi
