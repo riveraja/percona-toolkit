@@ -45,6 +45,9 @@ var (
 
 func main() {
 	cfg, showVersion, err := parseFlags(os.Args[1:])
+	if errors.Is(err, flag.ErrHelp) {
+		os.Exit(0)
+	}
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n\n", err)
 		printUsage(os.Stderr)
@@ -70,19 +73,6 @@ func main() {
 	defer cancel()
 
 	started := time.Now()
-
-	if cfg.PreventAutoMerge {
-		if err := defrag.PreventAutoMerge(ctx, cfg); err != nil {
-			if errors.Is(err, context.Canceled) {
-				log.Warn().Msg("operation canceled")
-				os.Exit(130)
-			}
-			log.Error().Err(err).Msg("prevent-automerge failed")
-			os.Exit(1)
-		}
-		log.Info().Str("elapsed", time.Since(started).Round(time.Second).String()).Msg("completed")
-		return
-	}
 
 	if err := defrag.Run(ctx, cfg); err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -123,6 +113,7 @@ func parseFlags(args []string) (config.Config, bool, error) {
 
 	fs := flag.NewFlagSet("pt-mongodb-defrag", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
+	fs.Usage = func() { printUsage(os.Stderr) }
 
 	fs.StringVar(&cfg.URI, "uri", "", "MongoDB connection URI for a mongos router")
 	fs.StringVar(&cfg.Namespace, "namespace", "", "Target namespace in the form database.collection")
@@ -138,12 +129,7 @@ func parseFlags(args []string) (config.Config, bool, error) {
 	fs.BoolVar(&cfg.Quiet, "quiet", false, "Reduce log volume")
 	fs.BoolVar(&showVersion, "version", false, "Print version information and exit")
 
-	// Prevent-automerge flags.
-	fs.BoolVar(&cfg.PreventAutoMerge, "prevent-automerge", false, "Prevent AutoMerger from re-merging a specific chunk by splitting it and moving one half to a different shard")
-	fs.StringVar(&cfg.ChunkID, "chunk-id", "", "Chunk _id from config.chunks (required with -prevent-automerge)")
-	fs.StringVar(&cfg.ChunkQuery, "chunk-query", "", "Query document identifying the split point within the chunk (required with -prevent-automerge). Accepts JSON ({\"sk\": 15000}) or key=value (sk=15000) format")
-	fs.StringVar(&cfg.TargetShard, "target-shard", "", "Target shard to move the upper half of the split chunk (required with -prevent-automerge)")
-	fs.BoolVar(&cfg.AutoApprove, "auto-approve", false, "Skip the confirmation prompt when using -prevent-automerge")
+
 
 	if err := fs.Parse(args); err != nil {
 		return cfg, false, err
@@ -175,17 +161,6 @@ func printUsage(w *os.File) {
 	fmt.Fprintln(w, "Usage:")
 	fmt.Fprintln(w, "  pt-mongodb-defrag -uri mongodb://mongos:27017 -namespace db.collection [flags]")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Defragmentation modes:")
-	fmt.Fprintln(w, "  (default)    Run the 4-phase defragmentation pipeline")
-	fmt.Fprintln(w, "  -prevent-automerge   Split a chunk and move half to another shard,")
-	fmt.Fprintln(w, "                       preventing AutoMerger from re-merging them")
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Prevent-automerge flags (with -prevent-automerge):")
-	fmt.Fprintln(w, "  -chunk-id       Chunk _id from config.chunks")
-	fmt.Fprintln(w, "  -chunk-query    Split point: JSON ({\"sk\":15000}) or key=value (sk=15000)")
-	fmt.Fprintln(w, "  -target-shard   Destination shard for the upper half")
-	fmt.Fprintln(w, "  -auto-approve   Skip confirmation prompt")
-	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Defragmentation flags (without -prevent-automerge):")
+	fmt.Fprintln(w, "Flags:")
 	fmt.Fprintln(w, "  See -help for the full list")
 }

@@ -35,39 +35,9 @@ type Config struct {
 	PlanOut         string
 	EnabledPhases   map[int]bool
 	Quiet           bool
-
-	// PreventAutoMerge mode
-	PreventAutoMerge bool
-	ChunkID          string
-	ChunkQuery       string
-	TargetShard      string
-	AutoApprove      bool
 }
 
 func (c *Config) Validate() error {
-	if c.PreventAutoMerge {
-		if c.Namespace == "" {
-			return fmt.Errorf("-namespace is required with -prevent-automerge")
-		}
-		parts := strings.Split(c.Namespace, ".")
-		if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
-			return fmt.Errorf("invalid -namespace %q, expected database.collection", c.Namespace)
-		}
-		c.Database = parts[0]
-		c.Collection = parts[1]
-
-		if c.ChunkID == "" {
-			return fmt.Errorf("-chunk-id is required with -prevent-automerge")
-		}
-		if c.ChunkQuery == "" {
-			return fmt.Errorf("-chunk-query is required with -prevent-automerge")
-		}
-		if c.TargetShard == "" {
-			return fmt.Errorf("-target-shard is required with -prevent-automerge")
-		}
-		return nil
-	}
-
 	parts := strings.Split(c.Namespace, ".")
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return fmt.Errorf("invalid -namespace %q, expected database.collection", c.Namespace)

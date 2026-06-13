@@ -6,11 +6,8 @@
 
 Manually defragments sharded collections on MongoDB 7.0+.
 
-Operations
+Description
 ============
-
-Defragmentation pipeline (default)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
 A multi-phase batch process that measures, merges, and splits chunks across a collection.
 
@@ -19,15 +16,10 @@ A multi-phase batch process that measures, merges, and splits chunks across a co
 3. **Phase 3** — Re-check ``jumbo`` chunks, clear stale jumbo flags, and attempt to split chunks that are still too large.
 4. **Phase 4** — Split oversized chunks that are not marked ``jumbo``.
 
-Prevent AutoMerger (``-prevent-automerge``)
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-A targeted single-chunk operation that prevents MongoDB 7.0+'s AutoMerger from re-merging a specific chunk by splitting it and moving one half to a different shard. The two halves can no longer be auto-merged because they no longer reside on the same shard.
-
 Usage
 =====
 
-Defragmentation::
+.. code-block:: bash
 
    pt-mongodb-defrag \
      -uri "mongodb://mongos1:27017/?replicaSet=rs0" \
@@ -37,28 +29,17 @@ Defragmentation::
      -split-merge-sleep 750ms \
      -sleep 750ms
 
-Dry run::
+Dry run:
+
+.. code-block:: bash
 
    pt-mongodb-defrag \
      -uri "mongodb://mongos1:27017" \
      -namespace "app.orders" \
      -dry-run
 
-Prevent AutoMerger::
-
-   pt-mongodb-defrag \
-     -uri "mongodb://mongos1:27017" \
-     -prevent-automerge \
-     -namespace "app.orders" \
-     -chunk-id "app.orders-chunk_47" \
-     -chunk-query '{"sk": 15000}' \
-     -target-shard "shard02"
-
-Flags reference
-===============
-
-Defragmentation flags (default mode)
--------------------------------------
+Flags
+======
 
 ======================== ================ =========================================================
 Flag                     Default          Description
@@ -78,27 +59,10 @@ Flag                     Default          Description
 ``-version``             ``false``       Print version information and exit
 ======================== ================ =========================================================
 
-Prevent-automerge flags (``-prevent-automerge`` mode)
-------------------------------------------------------
-
-======================== ============= ===========================================================================
-Flag                     Required      Description
-======================== ============= ===========================================================================
-``-uri``                 yes           MongoDB connection URI for a mongos router
-``-namespace``           yes           Target namespace in the form ``database.collection``
-``-chunk-id``            yes           Chunk ``_id`` from ``config.chunks``
-``-chunk-query``         yes           Split point query (JSON or ``key=value`` format)
-``-target-shard``        yes           Target shard for the upper half (must differ from current shard)
-``-auto-approve``        no            Skip the confirmation prompt
-======================== ============= ===========================================================================
-
 Minimum required privileges
 ============================
 
 The tool connects to a ``mongos`` and requires the following privileges on the ``admin`` and ``config`` databases.
-
-Defragmentation pipeline
-~~~~~~~~~~~~~~~~~~~~~~~~~
 
 =============== ========================================================== =====================================
 Action          Resource                                                   Used by
@@ -112,20 +76,6 @@ Action          Resource                                                   Used 
 ``clearJumboFlag`` target collection                                       Phase 3 — clearing stale jumbo flags
 =============== ========================================================== =====================================
 
-Prevent-automerge additional privileges
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-===================== ================== ============================================
-Action                Resource           Used by
-===================== ================== ============================================
-``configureCollectionBalancing`` target  Disabling and re-enabling the AutoMerger
-                       database/collection
-``getParameter``       cluster           Reading ``autoMergerIntervalSecs``
-``splitChunk``         target collection Splitting the chunk at the query boundary
-``moveChunk``          target collection Moving the upper half to the target shard
-``find``               ``config.chunks`` Looking up the chunk by ``_id``
-===================== ================== ============================================
-
 Notes
 =====
 
@@ -133,5 +83,3 @@ Notes
 - On MongoDB 7.0+, adjacent chunks are merged automatically. Use this tool for exceptional cases.
 - Prefer running during a shard balancing window to reduce metadata-update impact on CRUD latency.
 - Cross-shard ``moveRange`` can fail with orphan cleanup timeouts. Retry after the cluster settles or use ``-allow-moves=false``.
-- The ``-prevent-automerge`` mode does not support hashed shard keys.
-- Zoned collections: the tool warns if zones are present but does not block the operation.

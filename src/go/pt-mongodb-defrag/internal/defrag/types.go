@@ -43,15 +43,6 @@ type ChunkMetrics struct {
 	MarkedJumbo bool  `json:"marked_jumbo"`
 }
 
-// chunkDocument maps a config.chunks document for single-chunk lookup.
-type chunkDocument struct {
-	ID    string `bson:"_id"`
-	Min   bson.D `bson:"min"`
-	Max   bson.D `bson:"max"`
-	Shard string `bson:"shard"`
-	Jumbo bool   `bson:"jumbo,omitempty"`
-}
-
 type Snapshot struct {
 	Namespace      string          `json:"namespace"`
 	CollectedAt    string          `json:"collected_at"`

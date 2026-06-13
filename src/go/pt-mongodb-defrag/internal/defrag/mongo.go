@@ -193,67 +193,6 @@ func (m *Mongo) SplitChunk(ctx context.Context, ns string, chunk Chunk, hashed b
 	return m.client.Database("admin").RunCommand(ctx, cmd).Err()
 }
 
-// ChunkByID looks up a single chunk in config.chunks by _id.
-func (m *Mongo) ChunkByID(ctx context.Context, ns, chunkID string) (chunkDocument, CollectionMetadata, error) {
-	meta, err := m.CollectionMetadata(ctx, ns)
-	if err != nil {
-		return chunkDocument{}, CollectionMetadata{}, fmt.Errorf("load collection metadata: %w", err)
-	}
-
-	var doc chunkDocument
-	err = m.client.Database("config").Collection("chunks").
-		FindOne(ctx, bson.D{{Key: "_id", Value: chunkID}}).
-		Decode(&doc)
-	if err != nil {
-		if errors.Is(err, mongo.ErrNoDocuments) {
-			return chunkDocument{}, CollectionMetadata{}, fmt.Errorf("chunk %q not found in config.chunks", chunkID)
-		}
-		return chunkDocument{}, CollectionMetadata{}, fmt.Errorf("lookup chunk %q: %w", chunkID, err)
-	}
-
-	return doc, meta, nil
-}
-
-// AutoMergerIntervalSecs reads the cluster's autoMergerIntervalSecs parameter.
-// Returns the MongoDB default (10) if the parameter cannot be read.
-func (m *Mongo) AutoMergerIntervalSecs(ctx context.Context) (int64, error) {
-	var result struct {
-		AutoMergerIntervalSecs int64 `bson:"autoMergerIntervalSecs"`
-		OK                     int   `bson:"ok"`
-	}
-	err := m.client.Database("admin").RunCommand(ctx, bson.D{
-		{Key: "getParameter", Value: 1},
-		{Key: "autoMergerIntervalSecs", Value: 1},
-	}).Decode(&result)
-	if err != nil || result.OK != 1 {
-		return 10, nil // default fallback
-	}
-	return result.AutoMergerIntervalSecs, nil
-}
-
-// ConfigureAutoMerger enables or disables the AutoMerger for a collection.
-func (m *Mongo) ConfigureAutoMerger(ctx context.Context, ns string, enabled bool) error {
-	cmd := bson.D{
-		{Key: "configureCollectionBalancing", Value: ns},
-		{Key: "autoMerger", Value: enabled},
-	}
-	return m.client.Database("admin").RunCommand(ctx, cmd).Err()
-}
-
-// MoveRangeWithFind moves a chunk identified by a find query to a target shard.
-// forceJumbo bypasses the document-count move restriction.
-func (m *Mongo) MoveRangeWithFind(ctx context.Context, ns string, find bson.D, toShard string, forceJumbo bool) error {
-	cmd := bson.D{
-		{Key: "moveRange", Value: ns},
-		{Key: "find", Value: find},
-		{Key: "toShard", Value: toShard},
-	}
-	if forceJumbo {
-		cmd = append(cmd, bson.E{Key: "forceJumbo", Value: true})
-	}
-	return m.client.Database("admin").RunCommand(ctx, cmd).Err()
-}
-
 func mustMarshalBounds(doc bson.D) string {
 	data, _ := bson.MarshalExtJSON(doc, true, false)
 	return string(data)
