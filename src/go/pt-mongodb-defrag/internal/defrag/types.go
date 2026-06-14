@@ -39,6 +39,7 @@ type ChunkMetrics struct {
 	Bytes       int64 `json:"bytes"`
 	Documents   int64 `json:"documents"`
 	Millis      int64 `json:"millis"`
+	Estimated   bool  `json:"estimated,omitempty"`
 	Oversized   bool  `json:"oversized"`
 	MarkedJumbo bool  `json:"marked_jumbo"`
 }

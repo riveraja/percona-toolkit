@@ -31,7 +31,13 @@ func Run(ctx context.Context, cfg config.Config) error {
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
-	defer m.Close(context.Background())
+	defer func() {
+		disconnectCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := m.Close(disconnectCtx); err != nil {
+			log.Warn().Err(err).Msg("disconnect failed")
+		}
+	}()
 
 	if err := m.EnsureMongos(ctx); err != nil {
 		return fmt.Errorf("connection must target mongos: %w", err)
@@ -137,16 +143,15 @@ func runPhase1(
 		}
 
 		key := chunkKey(chunk.Min, chunk.Max)
-		size, err := m.DataSize(ctx, cfg.Database, cfg.Namespace, meta.Key, chunk.Min, chunk.Max)
+		size, err := ensureChunkMetrics(ctx, m, cfg, meta, chunk, maxChunkBytes, metrics)
 		if err != nil {
 			return fmt.Errorf("calculate chunk size %s: %w", key, err)
 		}
-		size.Oversized = size.Bytes > maxChunkBytes
-		size.MarkedJumbo = chunk.Jumbo
-		metrics[key] = size
+		minBounds := formatBounds(chunk.Min)
+		maxBounds := formatBounds(chunk.Max)
 		snapshot.Chunks = append(snapshot.Chunks, SnapshotChunk{
-			Min:       mustMarshalBounds(chunk.Min),
-			Max:       mustMarshalBounds(chunk.Max),
+			Min:       minBounds,
+			Max:       maxBounds,
 			Shard:     chunk.Shard,
 			Jumbo:     chunk.Jumbo,
 			Bytes:     size.Bytes,
@@ -207,7 +212,7 @@ func runPhase2(
 		}
 
 		progress := false
-		for i := 0; i < len(chunks)-1; i++ {
+		for i := 0; i < len(chunks)-1; {
 			left := chunks[i]
 			right := chunks[i+1]
 
@@ -222,22 +227,40 @@ func runPhase2(
 
 			combined := leftSize.Bytes + rightSize.Bytes
 			if combined > maxChunkBytes {
+				i++
+				continue
+			}
+			leftSize, err = ensureExactChunkMetrics(ctx, m, cfg, meta, left, maxChunkBytes, metrics)
+			if err != nil {
+				return err
+			}
+			rightSize, err = ensureExactChunkMetrics(ctx, m, cfg, meta, right, maxChunkBytes, metrics)
+			if err != nil {
+				return err
+			}
+			combined = leftSize.Bytes + rightSize.Bytes
+			if combined > maxChunkBytes {
+				i++
 				continue
 			}
 
 			targetShard := left.Shard
 			moveChunk := Chunk{}
+			moveChunkBytes := int64(0)
 			needsMove := left.Shard != right.Shard
 			if needsMove {
 				if !cfg.AllowMoves || (hasZones && !cfg.AllowZonedMoves) {
+					i++
 					continue
 				}
 				if leftSize.Bytes > rightSize.Bytes {
 					targetShard = left.Shard
 					moveChunk = right
+					moveChunkBytes = rightSize.Bytes
 				} else {
 					targetShard = right.Shard
 					moveChunk = left
+					moveChunkBytes = leftSize.Bytes
 				}
 
 				log.Info().
@@ -245,7 +268,7 @@ func runPhase2(
 					Str("action", "moveRange").
 					Str("from", moveChunk.Shard).
 					Str("to", targetShard).
-					Str("bytes", metricMiB(metricBytes(moveChunk, left, right, leftSize, rightSize))).
+					Str("bytes", metricMiB(moveChunkBytes)).
 					Msg("phase 2 action")
 				if !cfg.DryRun {
 					if err := m.MoveRange(ctx, cfg.Namespace, moveChunk.Min, moveChunk.Max, targetShard); err != nil {
@@ -268,12 +291,28 @@ func runPhase2(
 				}
 				sleepContext(ctx, cfg.SplitMergeSleep)
 			}
-			metrics[chunkKey(left.Min, right.Max)] = ChunkMetrics{Bytes: combined}
+			mergedChunk := Chunk{
+				Min:   left.Min,
+				Max:   right.Max,
+				Shard: targetShard,
+				Jumbo: left.Jumbo || right.Jumbo,
+			}
+			metrics[chunkKey(left.Min, right.Max)] = ChunkMetrics{
+				Bytes:       combined,
+				Documents:   leftSize.Documents + rightSize.Documents,
+				Estimated:   false,
+				Oversized:   combined > maxChunkBytes,
+				MarkedJumbo: mergedChunk.Jumbo,
+			}
 			delete(metrics, chunkKey(left.Min, left.Max))
 			delete(metrics, chunkKey(right.Min, right.Max))
 			merges++
 			progress = true
-			break
+			chunks[i] = mergedChunk
+			chunks = append(chunks[:i+1], chunks[i+2:]...)
+			if i > 0 {
+				i--
+			}
 		}
 
 		if !progress {
@@ -393,6 +432,13 @@ func runPhase4(
 		if metric.Bytes <= maxChunkBytes {
 			continue
 		}
+		metric, err = ensureExactChunkMetrics(ctx, m, cfg, meta, chunk, maxChunkBytes, metrics)
+		if err != nil {
+			return err
+		}
+		if metric.Bytes <= maxChunkBytes {
+			continue
+		}
 		oversized++
 
 		log.Info().
@@ -429,12 +475,42 @@ func ensureChunkMetrics(
 ) (ChunkMetrics, error) {
 	key := chunkKey(chunk.Min, chunk.Max)
 	if metric, ok := metrics[key]; ok {
-		if metric.Bytes > 0 {
+		if metric.Bytes > 0 || metric.Documents > 0 {
 			return metric, nil
 		}
 	}
 
-	metric, err := m.DataSize(ctx, cfg.Database, cfg.Namespace, meta.Key, chunk.Min, chunk.Max)
+	metric, err := m.DataSize(ctx, cfg.Database, cfg.Namespace, meta.Key, chunk.Min, chunk.Max, true)
+	if err != nil {
+		return ChunkMetrics{}, fmt.Errorf("calculate chunk size %s: %w", key, err)
+	}
+	if shouldUseExactMetrics(metric, maxChunkBytes, chunk.Jumbo) {
+		metric, err = m.DataSize(ctx, cfg.Database, cfg.Namespace, meta.Key, chunk.Min, chunk.Max, false)
+		if err != nil {
+			return ChunkMetrics{}, fmt.Errorf("calculate chunk size %s: %w", key, err)
+		}
+	}
+	metric.Oversized = metric.Bytes > maxChunkBytes
+	metric.MarkedJumbo = chunk.Jumbo
+	metrics[key] = metric
+	return metric, nil
+}
+
+func ensureExactChunkMetrics(
+	ctx context.Context,
+	m *Mongo,
+	cfg config.Config,
+	meta CollectionMetadata,
+	chunk Chunk,
+	maxChunkBytes int64,
+	metrics map[string]ChunkMetrics,
+) (ChunkMetrics, error) {
+	key := chunkKey(chunk.Min, chunk.Max)
+	if metric, ok := metrics[key]; ok && !metric.Estimated {
+		return metric, nil
+	}
+
+	metric, err := m.DataSize(ctx, cfg.Database, cfg.Namespace, meta.Key, chunk.Min, chunk.Max, false)
 	if err != nil {
 		return ChunkMetrics{}, fmt.Errorf("calculate chunk size %s: %w", key, err)
 	}
@@ -444,8 +520,29 @@ func ensureChunkMetrics(
 	return metric, nil
 }
 
+func shouldUseExactMetrics(metric ChunkMetrics, maxChunkBytes int64, markedJumbo bool) bool {
+	if markedJumbo {
+		return true
+	}
+	if maxChunkBytes <= 0 {
+		return true
+	}
+	lowerBound := maxChunkBytes * 8 / 10
+	upperBound := maxChunkBytes * 12 / 10
+	return metric.Bytes >= lowerBound && metric.Bytes <= upperBound
+}
+
 func chunkKey(min, max bson.D) string {
-	return strings.Join([]string{mustMarshalBounds(min), mustMarshalBounds(max)}, " -> ")
+	return strings.Join([]string{formatBounds(min), formatBounds(max)}, " -> ")
+}
+
+func formatBounds(doc bson.D) string {
+	bounds, err := marshalBounds(doc)
+	if err != nil {
+		log.Warn().Err(err).Interface("bounds_doc", doc).Msg("failed to marshal chunk bounds")
+		return fmt.Sprintf("<marshal-error:%v>", doc)
+	}
+	return bounds
 }
 
 func isHashedShardKey(key bson.D) bool {
@@ -474,11 +571,11 @@ func sleepContext(ctx context.Context, d time.Duration) {
 }
 
 func wrapMoveRangeError(bounds string, err error) error {
-	msg := fmt.Sprintf("moveRange %s: %v", bounds, err)
+	msg := fmt.Sprintf("moveRange %s", bounds)
 	if isOrphanCleanupTimeout(err) {
-		msg += "; MongoDB timed out deleting donor-side orphaned documents after the range transfer. This is a server-side migration cleanup limit, not the tool's sleep setting. Retry after the cluster settles, or rerun with -allow-moves=false to skip cross-shard merge preparation"
+		return fmt.Errorf("%s: %w; MongoDB timed out deleting donor-side orphaned documents after the range transfer. This is a server-side migration cleanup limit, not the tool's sleep setting. Retry after the cluster settles, or rerun with -allow-moves=false to skip cross-shard merge preparation", msg, err)
 	}
-	return fmt.Errorf("%s", msg)
+	return fmt.Errorf("%s: %w", msg, err)
 }
 
 func isOrphanCleanupTimeout(err error) bool {
@@ -487,13 +584,6 @@ func isOrphanCleanupTimeout(err error) bool {
 	}
 	msg := err.Error()
 	return strings.Contains(msg, "Failed to delete orphaned") && strings.Contains(msg, "ExceededTimeLimit")
-}
-
-func metricBytes(candidate Chunk, left Chunk, right Chunk, leftSize ChunkMetrics, rightSize ChunkMetrics) int64 {
-	if chunkKey(candidate.Min, candidate.Max) == chunkKey(left.Min, left.Max) {
-		return leftSize.Bytes
-	}
-	return rightSize.Bytes
 }
 
 func metricMiB(bytes int64) string {

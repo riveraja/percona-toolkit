@@ -56,4 +56,7 @@ func TestWrapMoveRangeErrorAddsGuidanceForOrphanCleanupTimeout(t *testing.T) {
 	if !strings.Contains(msg, "-allow-moves=false") {
 		t.Fatalf("expected move disabling guidance in wrapped error, got %q", msg)
 	}
+	if !errors.Is(wrapped, err) {
+		t.Fatalf("expected wrapped error to preserve original error for errors.Is")
+	}
 }
