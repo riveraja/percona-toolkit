@@ -27,7 +27,7 @@ import (
 )
 
 func Run(ctx context.Context, cfg config.Config) error {
-	m, err := Connect(ctx, cfg.URI)
+	m, err := Connect(ctx, cfg.URI, cfg.MetadataTimeout, cfg.CommandTimeout)
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
 	}
@@ -48,9 +48,9 @@ func Run(ctx context.Context, cfg config.Config) error {
 		return fmt.Errorf("buildInfo: %w", err)
 	}
 	if len(buildInfo.VersionArray) >= 1 && buildInfo.VersionArray[0] < 7 {
-		log.Warn().Str("version", buildInfo.Version).Msg("MongoDB version below the supported baseline; the tool only targets 7.0+")
+		log.Info().Str("version", buildInfo.Version).Msg("MongoDB version below the supported baseline; the tool only targets 7.0+")
 	} else {
-		log.Warn().Str("version", buildInfo.Version).Msg("MongoDB 7.0+ automatically merges adjacent chunks; manual defragmentation is usually only justified for cleanup or other exceptional cases")
+		log.Info().Str("version", buildInfo.Version).Msg("MongoDB 7.0+ automatically merges adjacent chunks; manual defragmentation is usually only justified for cleanup or other exceptional cases")
 	}
 
 	meta, err := m.CollectionMetadata(ctx, cfg.Namespace)
@@ -71,10 +71,13 @@ func Run(ctx context.Context, cfg config.Config) error {
 		return fmt.Errorf("check zones: %w", err)
 	}
 	if hasZones && cfg.AllowMoves && !cfg.AllowZonedMoves {
-		log.Warn().Msg("collection has zones; cross-shard merge prep is disabled unless -allow-zoned-moves is set")
+		log.Info().Msg("collection has zones; cross-shard merge prep is disabled unless -allow-zoned-moves is set")
 	}
-	log.Warn().Msg("run manual defragmentation during a shard balancing window when possible to reduce metadata-update impact on CRUD latency")
-	log.Warn().Msg("merging chunks clears placement history for the merged ranges; snapshot reads and some transactions can transiently fail with stale chunk history errors")
+	if cfg.AllowZonedMoves && !cfg.AllowMoves {
+		log.Warn().Msg("-allow-zoned-moves has no effect because -allow-moves is false")
+	}
+	log.Info().Msg("run manual defragmentation during a shard balancing window when possible to reduce metadata-update impact on CRUD latency")
+	log.Info().Msg("merging chunks clears placement history for the merged ranges; snapshot reads and some transactions can transiently fail with stale chunk history errors")
 
 	log.Info().
 		Str("namespace", cfg.Namespace).
@@ -177,7 +180,7 @@ func runPhase1(
 			return fmt.Errorf("marshal plan snapshot: %w", err)
 		}
 		if cfg.DryRun {
-			log.Info().Str("path", cfg.PlanOut).Msg("dry-run: would write plan snapshot")
+			log.Info().Str("path", cfg.PlanOut).Msg("dry-run: plan snapshot not written (use without -dry-run to persist)")
 		} else if err := os.WriteFile(cfg.PlanOut, data, 0o644); err != nil {
 			return fmt.Errorf("write plan snapshot: %w", err)
 		}

@@ -38,6 +38,10 @@ Dry run:
      -namespace "app.orders" \
      -dry-run
 
+.. note::
+   Phases 2–4 automatically calculate chunk sizes when phase 1 is skipped.
+   The phase-1 snapshot (written via ``-plan-out``) will be empty in that case.
+
 Flags
 ======
 

@@ -110,6 +110,8 @@ func parseFlags(args []string) (config.Config, bool, error) {
 	var splitMergeSleep time.Duration
 	var phases string
 	var showVersion bool
+	var metadataTimeout time.Duration
+	var commandTimeout time.Duration
 
 	fs := flag.NewFlagSet("pt-mongodb-defrag", flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -127,6 +129,8 @@ func parseFlags(args []string) (config.Config, bool, error) {
 	fs.StringVar(&cfg.PlanOut, "plan-out", "", "Optional path to write the phase-1 sizing snapshot as JSON")
 	fs.StringVar(&phases, "phases", "1,2,3,4", "Comma-separated phases to run")
 	fs.BoolVar(&cfg.Quiet, "quiet", false, "Reduce log volume")
+	fs.DurationVar(&metadataTimeout, "metadata-timeout", 30*time.Second, "Timeout for metadata queries (config DB lookups)")
+	fs.DurationVar(&commandTimeout, "timeout", 2*time.Minute, "Timeout for long-running commands (dataSize, moveRange, merge, split, etc.)")
 	fs.BoolVar(&showVersion, "version", false, "Print version information and exit")
 
 
@@ -137,6 +141,8 @@ func parseFlags(args []string) (config.Config, bool, error) {
 
 	cfg.Sleep = sleep
 	cfg.SplitMergeSleep = splitMergeSleep
+	cfg.MetadataTimeout = metadataTimeout
+	cfg.CommandTimeout = commandTimeout
 	enabled, err := config.ParsePhases(phases)
 	if err != nil {
 		return cfg, false, err

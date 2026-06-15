@@ -35,6 +35,8 @@ type Config struct {
 	PlanOut         string
 	EnabledPhases   map[int]bool
 	Quiet           bool
+	MetadataTimeout time.Duration
+	CommandTimeout  time.Duration
 }
 
 func (c *Config) Validate() error {
@@ -59,6 +61,12 @@ func (c *Config) Validate() error {
 	}
 	if len(c.EnabledPhases) == 0 {
 		return fmt.Errorf("at least one phase must be enabled")
+	}
+	if c.MetadataTimeout < 0 {
+		return fmt.Errorf("metadata-timeout must be >= 0")
+	}
+	if c.CommandTimeout < 0 {
+		return fmt.Errorf("timeout must be >= 0")
 	}
 	return nil
 }

@@ -68,8 +68,11 @@ Run specific phases only:
      -namespace "app.orders" \
      -phases 3,4
 
---------
+.. note::
+   Phases 2–4 automatically calculate chunk sizes when phase 1 is skipped.
+   The phase-1 snapshot (written via ``-plan-out``) will be empty in that case.
 
+--------
 Build and test
 ===============
 

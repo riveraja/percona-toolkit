@@ -26,15 +26,18 @@ import (
 )
 
 type Mongo struct {
-	client *mongo.Client
+	client            *mongo.Client
+	metadataTimeout   time.Duration
+	commandTimeout    time.Duration
 }
 
-const (
-	metadataTimeout = 30 * time.Second
-	commandTimeout  = 2 * time.Minute
-)
-
-func Connect(ctx context.Context, uri string) (*Mongo, error) {
+func Connect(ctx context.Context, uri string, metadataTimeout, commandTimeout time.Duration) (*Mongo, error) {
+	if metadataTimeout <= 0 {
+		metadataTimeout = 30 * time.Second
+	}
+	if commandTimeout <= 0 {
+		commandTimeout = 2 * time.Minute
+	}
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 
@@ -49,7 +52,11 @@ func Connect(ctx context.Context, uri string) (*Mongo, error) {
 		}
 		return nil, fmt.Errorf("ping failed: %w", err)
 	}
-	return &Mongo{client: client}, nil
+	return &Mongo{
+		client:          client,
+		metadataTimeout: metadataTimeout,
+		commandTimeout:  commandTimeout,
+	}, nil
 }
 
 func (m *Mongo) Close(ctx context.Context) error {
@@ -57,7 +64,7 @@ func (m *Mongo) Close(ctx context.Context) error {
 }
 
 func (m *Mongo) BuildInfo(ctx context.Context) (BuildInfo, error) {
-	ctx, cancel := context.WithTimeout(ctx, metadataTimeout)
+	ctx, cancel := context.WithTimeout(ctx, m.metadataTimeout)
 	defer cancel()
 	var info BuildInfo
 	err := m.client.Database("admin").RunCommand(ctx, bson.D{{Key: "buildInfo", Value: 1}}).Decode(&info)
@@ -65,7 +72,7 @@ func (m *Mongo) BuildInfo(ctx context.Context) (BuildInfo, error) {
 }
 
 func (m *Mongo) EnsureMongos(ctx context.Context) error {
-	ctx, cancel := context.WithTimeout(ctx, metadataTimeout)
+	ctx, cancel := context.WithTimeout(ctx, m.metadataTimeout)
 	defer cancel()
 
 	var result bson.M
@@ -82,7 +89,7 @@ func (m *Mongo) EnsureMongos(ctx context.Context) error {
 }
 
 func (m *Mongo) CollectionMetadata(ctx context.Context, ns string) (CollectionMetadata, error) {
-	ctx, cancel := context.WithTimeout(ctx, metadataTimeout)
+	ctx, cancel := context.WithTimeout(ctx, m.metadataTimeout)
 	defer cancel()
 	var meta CollectionMetadata
 	err := m.client.Database("config").Collection("collections").FindOne(ctx, bson.D{{Key: "_id", Value: ns}}).Decode(&meta)
@@ -90,7 +97,7 @@ func (m *Mongo) CollectionMetadata(ctx context.Context, ns string) (CollectionMe
 }
 
 func (m *Mongo) ClusterChunkSizeMB(ctx context.Context) (float64, error) {
-	ctx, cancel := context.WithTimeout(ctx, metadataTimeout)
+	ctx, cancel := context.WithTimeout(ctx, m.metadataTimeout)
 	defer cancel()
 	var doc struct {
 		Value any `bson:"value"`
@@ -116,14 +123,14 @@ func (m *Mongo) ClusterChunkSizeMB(ctx context.Context) (float64, error) {
 }
 
 func (m *Mongo) HasZones(ctx context.Context, ns string) (bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, metadataTimeout)
+	ctx, cancel := context.WithTimeout(ctx, m.metadataTimeout)
 	defer cancel()
 	count, err := m.client.Database("config").Collection("tags").CountDocuments(ctx, bson.D{{Key: "ns", Value: ns}})
 	return count > 0, err
 }
 
 func (m *Mongo) Chunks(ctx context.Context, meta CollectionMetadata, ns string) ([]Chunk, error) {
-	ctx, cancel := context.WithTimeout(ctx, commandTimeout)
+	ctx, cancel := context.WithTimeout(ctx, m.commandTimeout)
 	defer cancel()
 	coll := m.client.Database("config").Collection("chunks")
 	opts := options.Find().
@@ -173,7 +180,7 @@ func loadChunks(ctx context.Context, coll *mongo.Collection, filter interface{},
 }
 
 func (m *Mongo) DataSize(ctx context.Context, dbName, ns string, keyPattern, min, max bson.D, estimate bool) (ChunkMetrics, error) {
-	ctx, cancel := context.WithTimeout(ctx, commandTimeout)
+	ctx, cancel := context.WithTimeout(ctx, m.commandTimeout)
 	defer cancel()
 	cmd := bson.D{
 		{Key: "dataSize", Value: ns},
@@ -195,7 +202,7 @@ func (m *Mongo) DataSize(ctx context.Context, dbName, ns string, keyPattern, min
 }
 
 func (m *Mongo) MoveRange(ctx context.Context, ns string, min, max bson.D, toShard string) error {
-	ctx, cancel := context.WithTimeout(ctx, commandTimeout)
+	ctx, cancel := context.WithTimeout(ctx, m.commandTimeout)
 	defer cancel()
 	cmd := bson.D{
 		{Key: "moveRange", Value: ns},
@@ -207,7 +214,7 @@ func (m *Mongo) MoveRange(ctx context.Context, ns string, min, max bson.D, toSha
 }
 
 func (m *Mongo) MergeChunks(ctx context.Context, ns string, min, max bson.D) error {
-	ctx, cancel := context.WithTimeout(ctx, commandTimeout)
+	ctx, cancel := context.WithTimeout(ctx, m.commandTimeout)
 	defer cancel()
 	cmd := bson.D{
 		{Key: "mergeChunks", Value: ns},
@@ -217,7 +224,7 @@ func (m *Mongo) MergeChunks(ctx context.Context, ns string, min, max bson.D) err
 }
 
 func (m *Mongo) ClearJumboFlag(ctx context.Context, ns string, min, max bson.D) error {
-	ctx, cancel := context.WithTimeout(ctx, commandTimeout)
+	ctx, cancel := context.WithTimeout(ctx, m.commandTimeout)
 	defer cancel()
 	cmd := bson.D{
 		{Key: "clearJumboFlag", Value: ns},
@@ -227,7 +234,7 @@ func (m *Mongo) ClearJumboFlag(ctx context.Context, ns string, min, max bson.D) 
 }
 
 func (m *Mongo) SplitChunk(ctx context.Context, ns string, chunk Chunk, hashed bool) error {
-	ctx, cancel := context.WithTimeout(ctx, commandTimeout)
+	ctx, cancel := context.WithTimeout(ctx, m.commandTimeout)
 	defer cancel()
 	var cmd bson.D
 	if hashed {
