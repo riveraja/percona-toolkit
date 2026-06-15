@@ -43,8 +43,11 @@ func Connect(ctx context.Context, uri string) (*Mongo, error) {
 		return nil, err
 	}
 	if err := client.Ping(ctx, nil); err != nil {
-		_ = client.Disconnect(context.Background())
-		return nil, err
+		disconnectErr := client.Disconnect(context.Background())
+		if disconnectErr != nil {
+			return nil, fmt.Errorf("ping failed: %w; also failed to disconnect: %v", err, disconnectErr)
+		}
+		return nil, fmt.Errorf("ping failed: %w", err)
 	}
 	return &Mongo{client: client}, nil
 }
