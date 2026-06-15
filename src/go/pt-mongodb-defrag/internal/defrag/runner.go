@@ -26,6 +26,14 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 )
 
+const (
+	// estimationLowerBoundRatio and estimationUpperBoundRatio define the
+	// range around the target chunk size within which we trust the estimated
+	// dataSize result and skip the more expensive exact (non-estimate) call.
+	estimationLowerBoundRatio = 0.8
+	estimationUpperBoundRatio = 1.2
+)
+
 func Run(ctx context.Context, cfg config.Config) error {
 	m, err := Connect(ctx, cfg.URI, cfg.MetadataTimeout, cfg.CommandTimeout)
 	if err != nil {
@@ -146,7 +154,7 @@ func runPhase1(
 		}
 
 		key := chunkKey(chunk.Min, chunk.Max)
-		size, err := ensureChunkMetrics(ctx, m, cfg, meta, chunk, maxChunkBytes, metrics)
+	size, err := ensureChunkMetrics(ctx, m, cfg, meta, chunk, maxChunkBytes, metrics, false)
 		if err != nil {
 			return fmt.Errorf("calculate chunk size %s: %w", key, err)
 		}
@@ -204,14 +212,16 @@ func runPhase2(
 	merges := 0
 	moves := 0
 
+	// Initial load – subsequent passes only reload when no progress was made
+	// or when an error forces a fresh view of the cluster.
+	chunks, err := m.Chunks(ctx, meta, cfg.Namespace)
+	if err != nil {
+		return fmt.Errorf("load chunks: %w", err)
+	}
+
 	for pass := 1; pass <= cfg.MaxMergePasses; pass++ {
 		if err := ctx.Err(); err != nil {
 			return err
-		}
-
-		chunks, err := m.Chunks(ctx, meta, cfg.Namespace)
-		if err != nil {
-			return fmt.Errorf("reload chunks: %w", err)
 		}
 
 		progress := false
@@ -219,11 +229,11 @@ func runPhase2(
 			left := chunks[i]
 			right := chunks[i+1]
 
-			leftSize, err := ensureChunkMetrics(ctx, m, cfg, meta, left, maxChunkBytes, metrics)
+	leftSize, err := ensureChunkMetrics(ctx, m, cfg, meta, left, maxChunkBytes, metrics, false)
 			if err != nil {
 				return err
 			}
-			rightSize, err := ensureChunkMetrics(ctx, m, cfg, meta, right, maxChunkBytes, metrics)
+	rightSize, err := ensureChunkMetrics(ctx, m, cfg, meta, right, maxChunkBytes, metrics, false)
 			if err != nil {
 				return err
 			}
@@ -233,11 +243,11 @@ func runPhase2(
 				i++
 				continue
 			}
-			leftSize, err = ensureExactChunkMetrics(ctx, m, cfg, meta, left, maxChunkBytes, metrics)
+	leftSize, err = ensureChunkMetrics(ctx, m, cfg, meta, left, maxChunkBytes, metrics, true)
 			if err != nil {
 				return err
 			}
-			rightSize, err = ensureExactChunkMetrics(ctx, m, cfg, meta, right, maxChunkBytes, metrics)
+	rightSize, err = ensureChunkMetrics(ctx, m, cfg, meta, right, maxChunkBytes, metrics, true)
 			if err != nil {
 				return err
 			}
@@ -362,7 +372,7 @@ func runPhase3(
 		}
 		jumboChunks++
 
-		metric, err := ensureChunkMetrics(ctx, m, cfg, meta, chunk, maxChunkBytes, metrics)
+	metric, err := ensureChunkMetrics(ctx, m, cfg, meta, chunk, maxChunkBytes, metrics, false)
 		if err != nil {
 			return err
 		}
@@ -428,14 +438,14 @@ func runPhase4(
 		if chunk.Jumbo {
 			continue
 		}
-		metric, err := ensureChunkMetrics(ctx, m, cfg, meta, chunk, maxChunkBytes, metrics)
+	metric, err := ensureChunkMetrics(ctx, m, cfg, meta, chunk, maxChunkBytes, metrics, false)
 		if err != nil {
 			return err
 		}
 		if metric.Bytes <= maxChunkBytes {
 			continue
 		}
-		metric, err = ensureExactChunkMetrics(ctx, m, cfg, meta, chunk, maxChunkBytes, metrics)
+	metric, err = ensureChunkMetrics(ctx, m, cfg, meta, chunk, maxChunkBytes, metrics, true)
 		if err != nil {
 			return err
 		}
@@ -467,6 +477,10 @@ func runPhase4(
 	return nil
 }
 
+// ensureChunkMetrics returns cached metrics when available.
+// When forceExact is true it always performs a non-estimate dataSize call.
+// When forceExact is false it may first try an estimate and only fall back to
+// an exact measurement when shouldUseExactMetrics decides it is necessary.
 func ensureChunkMetrics(
 	ctx context.Context,
 	m *Mongo,
@@ -475,47 +489,29 @@ func ensureChunkMetrics(
 	chunk Chunk,
 	maxChunkBytes int64,
 	metrics map[string]ChunkMetrics,
+	forceExact bool,
 ) (ChunkMetrics, error) {
 	key := chunkKey(chunk.Min, chunk.Max)
 	if metric, ok := metrics[key]; ok {
-		if metric.Bytes > 0 || metric.Documents > 0 {
+		if forceExact {
+			if !metric.Estimated {
+				return metric, nil
+			}
+		} else if metric.Bytes > 0 || metric.Documents > 0 {
 			return metric, nil
 		}
 	}
 
-	metric, err := m.DataSize(ctx, cfg.Database, cfg.Namespace, meta.Key, chunk.Min, chunk.Max, true)
+	estimate := !forceExact
+	metric, err := m.DataSize(ctx, cfg.Database, cfg.Namespace, meta.Key, chunk.Min, chunk.Max, estimate)
 	if err != nil {
 		return ChunkMetrics{}, fmt.Errorf("calculate chunk size %s: %w", key, err)
 	}
-	if shouldUseExactMetrics(metric, maxChunkBytes, chunk.Jumbo) {
+	if !forceExact && shouldUseExactMetrics(metric, maxChunkBytes, chunk.Jumbo) {
 		metric, err = m.DataSize(ctx, cfg.Database, cfg.Namespace, meta.Key, chunk.Min, chunk.Max, false)
 		if err != nil {
 			return ChunkMetrics{}, fmt.Errorf("calculate chunk size %s: %w", key, err)
 		}
-	}
-	metric.Oversized = metric.Bytes > maxChunkBytes
-	metric.MarkedJumbo = chunk.Jumbo
-	metrics[key] = metric
-	return metric, nil
-}
-
-func ensureExactChunkMetrics(
-	ctx context.Context,
-	m *Mongo,
-	cfg config.Config,
-	meta CollectionMetadata,
-	chunk Chunk,
-	maxChunkBytes int64,
-	metrics map[string]ChunkMetrics,
-) (ChunkMetrics, error) {
-	key := chunkKey(chunk.Min, chunk.Max)
-	if metric, ok := metrics[key]; ok && !metric.Estimated {
-		return metric, nil
-	}
-
-	metric, err := m.DataSize(ctx, cfg.Database, cfg.Namespace, meta.Key, chunk.Min, chunk.Max, false)
-	if err != nil {
-		return ChunkMetrics{}, fmt.Errorf("calculate chunk size %s: %w", key, err)
 	}
 	metric.Oversized = metric.Bytes > maxChunkBytes
 	metric.MarkedJumbo = chunk.Jumbo
@@ -530,8 +526,8 @@ func shouldUseExactMetrics(metric ChunkMetrics, maxChunkBytes int64, markedJumbo
 	if maxChunkBytes <= 0 {
 		return true
 	}
-	lowerBound := maxChunkBytes * 8 / 10
-	upperBound := maxChunkBytes * 12 / 10
+	lowerBound := int64(float64(maxChunkBytes) * estimationLowerBoundRatio)
+	upperBound := int64(float64(maxChunkBytes) * estimationUpperBoundRatio)
 	return metric.Bytes >= lowerBound && metric.Bytes <= upperBound
 }
 
