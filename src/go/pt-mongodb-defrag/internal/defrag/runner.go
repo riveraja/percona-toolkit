@@ -17,6 +17,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -35,6 +36,13 @@ const (
 )
 
 func Run(ctx context.Context, cfg config.Config) error {
+	globalStart := time.Now()
+	summary := RunSummary{
+		URI:       maskURI(cfg.URI),
+		StartedAt: globalStart.UTC(),
+		Phases:    make([]PhaseTiming, 0, 4),
+	}
+
 	m, err := Connect(ctx, cfg.URI, cfg.MetadataTimeout, cfg.CommandTimeout)
 	if err != nil {
 		return fmt.Errorf("connect: %w", err)
@@ -101,28 +109,78 @@ func Run(ctx context.Context, cfg config.Config) error {
 	}
 
 	metrics := make(map[string]ChunkMetrics, len(chunks))
+
+	// Phase execution with timing capture
 	if cfg.EnabledPhases[1] {
+		phaseStart := time.Now()
 		if err := runPhase1(ctx, m, cfg, meta, chunks, maxChunkBytes, metrics); err != nil {
 			return err
 		}
+		summary.Phases = append(summary.Phases, PhaseTiming{
+			Phase:   1,
+			Started: phaseStart.UTC(),
+			Ended:   time.Now().UTC(),
+			Elapsed: time.Since(phaseStart),
+		})
 	}
 
 	if cfg.EnabledPhases[2] {
+		phaseStart := time.Now()
 		if err := runPhase2(ctx, m, cfg, meta, maxChunkBytes, metrics, hasZones); err != nil {
 			return err
 		}
+		summary.Phases = append(summary.Phases, PhaseTiming{
+			Phase:   2,
+			Started: phaseStart.UTC(),
+			Ended:   time.Now().UTC(),
+			Elapsed: time.Since(phaseStart),
+		})
 	}
 
 	if cfg.EnabledPhases[3] {
+		phaseStart := time.Now()
 		if err := runPhase3(ctx, m, cfg, meta, maxChunkBytes, metrics); err != nil {
 			return err
 		}
+		summary.Phases = append(summary.Phases, PhaseTiming{
+			Phase:   3,
+			Started: phaseStart.UTC(),
+			Ended:   time.Now().UTC(),
+			Elapsed: time.Since(phaseStart),
+		})
 	}
 
 	if cfg.EnabledPhases[4] {
+		phaseStart := time.Now()
 		if err := runPhase4(ctx, m, cfg, meta, maxChunkBytes, metrics); err != nil {
 			return err
 		}
+		summary.Phases = append(summary.Phases, PhaseTiming{
+			Phase:   4,
+			Started: phaseStart.UTC(),
+			Ended:   time.Now().UTC(),
+			Elapsed: time.Since(phaseStart),
+		})
+	}
+
+	summary.EndedAt = time.Now().UTC()
+	summary.TotalElapsed = summary.EndedAt.Sub(summary.StartedAt)
+
+	// Emit final summary report (text format; JSON export can be added later via --json/--report-out)
+	log.Info().
+		Str("uri", summary.URI).
+		Str("started", summary.StartedAt.Format(time.RFC3339)).
+		Str("ended", summary.EndedAt.Format(time.RFC3339)).
+		Str("total_elapsed", summary.TotalElapsed.Round(time.Second).String()).
+		Msg("defragmentation run complete")
+
+	for _, p := range summary.Phases {
+		log.Info().
+			Int("phase", p.Phase).
+			Str("started", p.Started.Format(time.RFC3339)).
+			Str("ended", p.Ended.Format(time.RFC3339)).
+			Str("elapsed", p.Elapsed.Round(time.Second).String()).
+			Msg("phase timing")
 	}
 
 	return nil
@@ -587,4 +645,26 @@ func isOrphanCleanupTimeout(err error) bool {
 
 func metricMiB(bytes int64) string {
 	return fmt.Sprintf("%.2fMiB", float64(bytes)/1024/1024)
+}
+
+// maskURI returns a copy of the MongoDB URI with username/password redacted.
+// It preserves host, port, replicaSet, authSource, and other query parameters.
+func maskURI(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil {
+		// best-effort fallback: try to strip the obvious credential portion
+		if idx := strings.Index(raw, "@"); idx != -1 {
+			if protoIdx := strings.Index(raw, "://"); protoIdx != -1 {
+				return raw[:protoIdx+3] + "<redacted>@" + raw[idx+1:]
+			}
+		}
+		return "<redacted>"
+	}
+	if u.User != nil {
+		u.User = url.User("<redacted>")
+	}
+	return u.String()
 }

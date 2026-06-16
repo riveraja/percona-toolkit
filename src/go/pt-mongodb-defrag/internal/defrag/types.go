@@ -14,6 +14,8 @@
 package defrag
 
 import (
+	"time"
+
 	"go.mongodb.org/mongo-driver/bson"
 )
 
@@ -59,4 +61,22 @@ type SnapshotChunk struct {
 	Jumbo     bool   `json:"jumbo"`
 	Bytes     int64  `json:"bytes"`
 	Documents int64  `json:"documents"`
+}
+
+// PhaseTiming captures start, end, and elapsed duration for a single phase.
+type PhaseTiming struct {
+	Phase   int           `json:"phase"`
+	Started time.Time     `json:"started"`
+	Ended   time.Time     `json:"ended"`
+	Elapsed time.Duration `json:"elapsed"`
+}
+
+// RunSummary aggregates overall run metadata and per-phase timing.
+// It is designed to be easily serialized (JSON) for future --json/--report-out flags.
+type RunSummary struct {
+	URI          string        `json:"uri"`           // masked credentials
+	StartedAt    time.Time     `json:"started_at"`
+	EndedAt      time.Time     `json:"ended_at"`
+	TotalElapsed time.Duration `json:"total_elapsed"`
+	Phases       []PhaseTiming `json:"phases"`
 }
