@@ -35,6 +35,72 @@ const (
 	estimationUpperBoundRatio = 1.2
 )
 
+// runPreflightChecks performs read-only safety and feasibility checks
+// immediately after loading collection metadata and the chunk list.
+// These checks always run (dry-run or not) and emit Info/Warn messages.
+// They add no extra load to the cluster because they only inspect data
+// that Run() has already fetched.
+func runPreflightChecks(
+	cfg config.Config,
+	meta CollectionMetadata,
+	chunks []Chunk,
+	hasZones bool,
+	maxChunkBytes int64,
+) {
+	if len(chunks) == 0 {
+		log.Warn().Msg("no chunks found for namespace; nothing to defragment")
+	}
+
+	// Detect hashed vs ranged shard key (informational)
+	if isHashedShardKey(meta.Key) {
+		log.Info().Msg("shard key is hashed; moveRange operations are limited and cross-shard merges may be restricted")
+	} else {
+		log.Info().Msg("shard key is ranged")
+	}
+
+	// Zone conflict warning (already emitted earlier in Run, but we keep the logic here for completeness)
+	if hasZones && cfg.AllowMoves && !cfg.AllowZonedMoves {
+		log.Info().Msg("collection has zones; cross-shard merge prep is disabled unless -allow-zoned-moves is set")
+	}
+}
+
+// runPostPhase1Checks inspects the metrics collected by Phase 1 (or an
+// earlier sizing step) and emits advisory messages. It is a no-op when the
+// metrics map is empty (Phase 1 was skipped).
+func runPostPhase1Checks(metrics map[string]ChunkMetrics, maxChunkBytes int64) {
+	if len(metrics) == 0 {
+		return
+	}
+
+	// Check 6: target chunk size vs actual data
+	smallest := int64(1<<63 - 1)
+	for _, m := range metrics {
+		if m.Bytes > 0 && m.Bytes < smallest {
+			smallest = m.Bytes
+		}
+	}
+	if smallest < maxChunkBytes && smallest > 0 {
+		log.Warn().
+			Str("smallest_chunk", metricMiB(smallest)).
+			Str("target_chunk_size", config.FormatMiB(maxChunkBytes)).
+			Msg("smallest measured chunk is already below the target chunk size; merges will be limited")
+	}
+
+	// Check 3: no possible merges at all
+	canMerge := false
+	for key, m := range metrics {
+		// very crude heuristic: if any chunk is < 50% of target we assume a merge is possible
+		if m.Bytes > 0 && m.Bytes <= maxChunkBytes/2 {
+			canMerge = true
+			break
+		}
+		_ = key
+	}
+	if !canMerge {
+		log.Info().Msg("no adjacent chunks are small enough to merge under the current target size; Phase 2 will perform zero merges")
+	}
+}
+
 func Run(ctx context.Context, cfg config.Config) error {
 	globalStart := time.Now()
 	summary := RunSummary{
@@ -108,6 +174,8 @@ func Run(ctx context.Context, cfg config.Config) error {
 		return fmt.Errorf("load chunks: %w", err)
 	}
 
+	runPreflightChecks(cfg, meta, chunks, hasZones, maxChunkBytes)
+
 	metrics := make(map[string]ChunkMetrics, len(chunks))
 
 	// Phase execution with timing capture
@@ -122,6 +190,7 @@ func Run(ctx context.Context, cfg config.Config) error {
 			Ended:   time.Now().UTC(),
 			Elapsed: time.Since(phaseStart),
 		})
+		runPostPhase1Checks(metrics, maxChunkBytes)
 	}
 
 	if cfg.EnabledPhases[2] {
