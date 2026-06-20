@@ -12,57 +12,52 @@
 # along with this program; if not, see <https://www.gnu.org/licenses/>.
 
 # docker-compose.yml
-#
-# Sharded MongoDB cluster for pt-mongodb-defrag testing.
-# Targets MongoDB 7.0+ — the AutoMerger feature that this tool
-# complements was introduced in 7.0.
-#
-# Quick start:
-#   docker compose up -d                              # Start cluster
-#   docker compose exec mongos /tool-scripts/generate-defrag-test-data.sh \
-#     --uri "mongodb://admin:admin@localhost:27017/admin"   # Populate test data
-#   docker compose down -v                            # Stop and clean everything
-#
-# See README.rst for full usage.
+# Sharded MongoDB cluster for pt-mongodb-defrag local testing with Authentication.
 
 version: "3.9"
 
 x-mongod:
   &mongod
-  image: ${TEST_MONGODB_IMAGE:-mongo:8.0}
+  image: ${TEST_MONGODB_IMAGE:-percona/percona-server-mongodb:8.0}
   restart: unless-stopped
   networks:
     - pt-defrag-net
-
-x-mongod-config:
-  &mongod-config
-  image: ${TEST_MONGODB_IMAGE:-mongo:8.0}
-  restart: unless-stopped
-  networks:
-    - pt-defrag-net
+  entrypoint: [ "/scripts/entrypoint.sh" ]
 
 services:
   # ---------------------------------------------------------------------------
   # Config server replica set  (3 members)
   # ---------------------------------------------------------------------------
   cfg-1:
-    <<: *mongod-config
+    <<: *mongod
     container_name: pt-defrag-cfg-1
-    command: mongod --replSet cfg --configsvr --port 27017 --bind_ip all --oplogSize 16
+    command: mongod --config /etc/mongod.conf
+    volumes:
+      - ../docker/test/mongod.key:/etc/mongo-raw/mongod.key:ro
+      - ./docker/scripts:/scripts:ro
+      - ./docker/config/cfg.conf:/etc/mongod.conf:ro
     ports:
       - "${PT_DEFRAG_CFG1_PORT:-30001}:27017"
 
   cfg-2:
-    <<: *mongod-config
+    <<: *mongod
     container_name: pt-defrag-cfg-2
-    command: mongod --replSet cfg --configsvr --port 27017 --bind_ip all --oplogSize 16
+    command: mongod --config /etc/mongod.conf
+    volumes:
+      - ../docker/test/mongod.key:/etc/mongo-raw/mongod.key:ro
+      - ./docker/scripts:/scripts:ro
+      - ./docker/config/cfg.conf:/etc/mongod.conf:ro
     ports:
       - "${PT_DEFRAG_CFG2_PORT:-30002}:27017"
 
   cfg-3:
-    <<: *mongod-config
+    <<: *mongod
     container_name: pt-defrag-cfg-3
-    command: mongod --replSet cfg --configsvr --port 27017 --bind_ip all --oplogSize 16
+    command: mongod --config /etc/mongod.conf
+    volumes:
+      - ../docker/test/mongod.key:/etc/mongo-raw/mongod.key:ro
+      - ./docker/scripts:/scripts:ro
+      - ./docker/config/cfg.conf:/etc/mongod.conf:ro
     ports:
       - "${PT_DEFRAG_CFG3_PORT:-30003}:27017"
 
@@ -72,21 +67,33 @@ services:
   rs1-1:
     <<: *mongod
     container_name: pt-defrag-rs1-1
-    command: mongod --replSet rs1 --shardsvr --port 27017 --bind_ip all --oplogSize 16
+    command: mongod --config /etc/mongod.conf
+    volumes:
+      - ../docker/test/mongod.key:/etc/mongo-raw/mongod.key:ro
+      - ./docker/scripts:/scripts:ro
+      - ./docker/config/rs1.conf:/etc/mongod.conf:ro
     ports:
       - "${PT_DEFRAG_RS1_PRIMARY:-30011}:27017"
 
   rs1-2:
     <<: *mongod
     container_name: pt-defrag-rs1-2
-    command: mongod --replSet rs1 --shardsvr --port 27017 --bind_ip all --oplogSize 16
+    command: mongod --config /etc/mongod.conf
+    volumes:
+      - ../docker/test/mongod.key:/etc/mongo-raw/mongod.key:ro
+      - ./docker/scripts:/scripts:ro
+      - ./docker/config/rs1.conf:/etc/mongod.conf:ro
     ports:
       - "${PT_DEFRAG_RS1_SECONDARY1:-30012}:27017"
 
   rs1-3:
     <<: *mongod
     container_name: pt-defrag-rs1-3
-    command: mongod --replSet rs1 --shardsvr --port 27017 --bind_ip all --oplogSize 16
+    command: mongod --config /etc/mongod.conf
+    volumes:
+      - ../docker/test/mongod.key:/etc/mongo-raw/mongod.key:ro
+      - ./docker/scripts:/scripts:ro
+      - ./docker/config/rs1.conf:/etc/mongod.conf:ro
     ports:
       - "${PT_DEFRAG_RS1_SECONDARY2:-30013}:27017"
 
@@ -96,21 +103,33 @@ services:
   rs2-1:
     <<: *mongod
     container_name: pt-defrag-rs2-1
-    command: mongod --replSet rs2 --shardsvr --port 27017 --bind_ip all --oplogSize 16
+    command: mongod --config /etc/mongod.conf
+    volumes:
+      - ../docker/test/mongod.key:/etc/mongo-raw/mongod.key:ro
+      - ./docker/scripts:/scripts:ro
+      - ./docker/config/rs2.conf:/etc/mongod.conf:ro
     ports:
       - "${PT_DEFRAG_RS2_PRIMARY:-30021}:27017"
 
   rs2-2:
     <<: *mongod
     container_name: pt-defrag-rs2-2
-    command: mongod --replSet rs2 --shardsvr --port 27017 --bind_ip all --oplogSize 16
+    command: mongod --config /etc/mongod.conf
+    volumes:
+      - ../docker/test/mongod.key:/etc/mongo-raw/mongod.key:ro
+      - ./docker/scripts:/scripts:ro
+      - ./docker/config/rs2.conf:/etc/mongod.conf:ro
     ports:
       - "${PT_DEFRAG_RS2_SECONDARY1:-30022}:27017"
 
   rs2-3:
     <<: *mongod
     container_name: pt-defrag-rs2-3
-    command: mongod --replSet rs2 --shardsvr --port 27017 --bind_ip all --oplogSize 16
+    command: mongod --config /etc/mongod.conf
+    volumes:
+      - ../docker/test/mongod.key:/etc/mongo-raw/mongod.key:ro
+      - ./docker/scripts:/scripts:ro
+      - ./docker/config/rs2.conf:/etc/mongod.conf:ro
     ports:
       - "${PT_DEFRAG_RS2_SECONDARY2:-30023}:27017"
 
@@ -119,7 +138,7 @@ services:
   # ---------------------------------------------------------------------------
   mongos:
     container_name: pt-defrag-mongos
-    image: ${TEST_MONGODB_IMAGE:-mongo:8.0}
+    image: ${TEST_MONGODB_IMAGE:-percona/percona-server-mongodb:8.0}
     restart: unless-stopped
     networks:
       - pt-defrag-net
@@ -131,14 +150,18 @@ services:
       - cfg-3
     volumes:
       - ./scripts:/tool-scripts:ro
-    command: mongos --configdb cfg/cfg-1:27017,cfg-2:27017,cfg-3:27017 --port 27017 --bind_ip all
+      - ../docker/test/mongod.key:/etc/mongo-raw/mongod.key:ro
+      - ./docker/scripts:/scripts:ro
+      - ./docker/config/mongos.conf:/etc/mongod.conf:ro
+    entrypoint: [ "/scripts/entrypoint.sh" ]
+    command: mongos --config /etc/mongod.conf
 
   # ---------------------------------------------------------------------------
   # Cluster initializer — runs once to set up replica sets, shards, and users
   # ---------------------------------------------------------------------------
   setup:
     container_name: pt-defrag-setup
-    image: ${TEST_MONGODB_IMAGE:-mongo:8.0}
+    image: ${TEST_MONGODB_IMAGE:-percona/percona-server-mongodb:8.0}
     networks:
       - pt-defrag-net
     depends_on:
