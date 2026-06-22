@@ -43,7 +43,7 @@ Usage
 .. code-block:: bash
 
    pt-mongodb-defrag \
-     -uri "mongodb://mongos1:27017/?replicaSet=rs0" \
+     -uri "mongodb://mongos1:27017" \
      -namespace "app.orders" \
      -chunk-size 128M \
      -plan-out /tmp/orders-defrag-plan.json \
@@ -175,8 +175,46 @@ Flag                     Default          Description
 ``-plan-out``             ``""``          Path to write the phase-1 sizing snapshot as JSON
 ``-phases``               ``"1,2,3,4"``  Comma-separated phases to run
 ``-quiet``                ``false``       Reduce log volume
+``-metadata-timeout``    ``30s``        Timeout for metadata queries (``config`` DB lookups)
+``-timeout``             ``2m``         Timeout for long-running commands (``dataSize``, ``moveRange``, ``merge``, ``split``, etc.)
 ``-version``              ``false``       Print version information and exit
 ======================== ================ =========================================================
+
+--------
+
+Limitations
+============
+
+**Single namespace per run.**
+The tool accepts exactly one ``-namespace`` (``database.collection``) per invocation.
+To defragment multiple collections, run the tool separately for each.
+
+**No resume on interruption.**
+All state (chunk metrics, merge progress, current phase position) is held in memory
+only. If the tool is interrupted (Ctrl+C, timeout, crash), there is no way to resume
+from where it left off. The ``-plan-out`` snapshot is written for review but is never
+consumed by the tool itself.
+
+**Silent split failures in Phases 3 and 4.**
+If ``split`` fails for a chunk (e.g., the chunk cannot be split further or the split
+point is invalid), the tool logs a warning and continues to the next chunk. The
+failed chunk remains oversized and is not retried.
+
+**Estimated ``dataSize`` can affect merge accuracy.**
+The tool requests estimated sizes first and falls back to exact measurement only
+when the estimate falls within 80–120% of the target chunk size or the chunk is
+marked ``jumbo``. Chunks whose estimated size falls outside that window may be
+merged based on approximate data, and the real combined size could exceed the
+target after merging.
+
+**No machine-readable output.**
+The only output format is structured log lines. There is no ``--json`` or
+``--report-out`` flag for programmatic consumption.
+
+**``--version`` requires ldflags.**
+The ``Version``, ``Build``, ``GoVersion``, and ``Commit`` variables are set via
+``-ldflags`` during ``make`` builds. If the tool is built directly with
+``go build`` without those flags, ``--version`` prints empty fields.
 
 --------
 
