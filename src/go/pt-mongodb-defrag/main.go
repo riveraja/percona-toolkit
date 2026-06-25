@@ -131,6 +131,8 @@ func parseFlags(args []string) (config.Config, bool, error) {
 	fs.BoolVar(&cfg.Quiet, "quiet", false, "Reduce log volume")
 	fs.DurationVar(&metadataTimeout, "metadata-timeout", 30*time.Second, "Timeout for metadata queries (config DB lookups)")
 	fs.DurationVar(&commandTimeout, "timeout", 2*time.Minute, "Timeout for long-running commands (dataSize, moveRange, merge, split, etc.)")
+	fs.BoolVar(&cfg.ValidateData, "validate", false, "Validate data integrity before and after defrag")
+	fs.IntVar(&cfg.SamplePercent, "sample-percent", 10, "Percentage of documents to sample for validation (1-100)")
 	fs.BoolVar(&showVersion, "version", false, "Print version information and exit")
 
 

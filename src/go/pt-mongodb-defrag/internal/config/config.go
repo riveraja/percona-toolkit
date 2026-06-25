@@ -37,6 +37,8 @@ type Config struct {
 	Quiet           bool
 	MetadataTimeout time.Duration
 	CommandTimeout  time.Duration
+	ValidateData    bool
+	SamplePercent   int // Percentage of documents to sample for validation (1-100)
 }
 
 func (c *Config) Validate() error {
@@ -67,6 +69,9 @@ func (c *Config) Validate() error {
 	}
 	if c.CommandTimeout < 0 {
 		return fmt.Errorf("timeout must be >= 0")
+	}
+	if c.SamplePercent < 0 || c.SamplePercent > 100 {
+		return fmt.Errorf("sample-percent must be between 0 and 100")
 	}
 	return nil
 }

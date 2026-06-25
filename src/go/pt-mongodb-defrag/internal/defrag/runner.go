@@ -176,6 +176,17 @@ func Run(ctx context.Context, cfg config.Config) error {
 
 	runPreflightChecks(cfg, meta, chunks, hasZones, maxChunkBytes)
 
+	// Run pre-validation if enabled
+	var preValResult *ValidationResult
+	if cfg.ValidateData {
+		log.Info().Msg("running pre-defrag validation...")
+		var err error
+		preValResult, err = runPreValidation(ctx, m, cfg)
+		if err != nil {
+			return fmt.Errorf("pre-validation failed: %w", err)
+		}
+	}
+
 	metrics := make(map[string]ChunkMetrics, len(chunks))
 
 	// Phase execution with timing capture
@@ -234,6 +245,14 @@ func Run(ctx context.Context, cfg config.Config) error {
 
 	summary.EndedAt = time.Now().UTC()
 	summary.TotalElapsed = summary.EndedAt.Sub(summary.StartedAt)
+
+	// Run post-validation if enabled
+	if cfg.ValidateData {
+		log.Info().Msg("running post-defrag validation...")
+		if err := runPostValidation(ctx, m, cfg, preValResult); err != nil {
+			log.Error().Err(err).Msg("post-validation failed")
+		}
+	}
 
 	// Emit final summary report (text format; JSON export can be added later via --json/--report-out)
 	log.Info().
@@ -736,4 +755,116 @@ func maskURI(raw string) string {
 		u.User = url.User("<redacted>")
 	}
 	return u.String()
+}
+
+// ValidationResult holds pre-defrag validation data for comparison
+type ValidationResult struct {
+	DocumentCount int64             `json:"document_count"`
+	SampleIDs     []interface{}     `json:"sample_ids,omitempty"`
+	Stats         map[string]int64  `json:"stats,omitempty"`
+	Timestamp     time.Time         `json:"timestamp"`
+}
+
+// runPreValidation performs validation before defrag phases
+func runPreValidation(ctx context.Context, m *Mongo, cfg config.Config) (*ValidationResult, error) {
+	result := &ValidationResult{
+		Timestamp: time.Now().UTC(),
+	}
+
+	// Count documents
+	count, err := m.CountDocuments(ctx, cfg.Database, cfg.Collection)
+	if err != nil {
+		return nil, fmt.Errorf("count documents: %w", err)
+	}
+	result.DocumentCount = count
+	log.Info().Int64("document_count", count).Msg("pre-validation: document count")
+
+	// Sample documents for later verification
+	if cfg.SamplePercent > 0 {
+		ids, err := m.SampleDocuments(ctx, cfg.Database, cfg.Collection, cfg.SamplePercent)
+		if err != nil {
+			log.Warn().Err(err).Msg("pre-validation: failed to sample documents")
+		} else {
+			result.SampleIDs = ids
+			log.Info().Int("sampled", len(ids)).Msg("pre-validation: sampled documents")
+		}
+	}
+
+	// Get collection stats
+	stats, err := m.GetCollectionStats(ctx, cfg.Database, cfg.Collection)
+	if err != nil {
+		log.Warn().Err(err).Msg("pre-validation: failed to get collection stats")
+	} else {
+		result.Stats = stats
+		log.Info().Interface("stats", stats).Msg("pre-validation: collection stats")
+	}
+
+	return result, nil
+}
+
+// runPostValidation performs validation after defrag phases and compares with pre-validation
+func runPostValidation(ctx context.Context, m *Mongo, cfg config.Config, preVal *ValidationResult) error {
+	log.Info().Msg("=== Post-Defrag Validation ===")
+
+	// Count documents
+	postCount, err := m.CountDocuments(ctx, cfg.Database, cfg.Collection)
+	if err != nil {
+		return fmt.Errorf("count documents: %w", err)
+	}
+	log.Info().Int64("document_count", postCount).Msg("post-validation: document count")
+
+	// Compare with pre-validation
+	if preVal != nil {
+		if postCount != preVal.DocumentCount {
+			log.Error().
+				Int64("pre_count", preVal.DocumentCount).
+				Int64("post_count", postCount).
+				Int64("difference", postCount - preVal.DocumentCount).
+				Msg("VALIDATION FAILED: Document count mismatch!")
+			return fmt.Errorf("document count mismatch: pre=%d, post=%d", preVal.DocumentCount, postCount)
+		}
+		log.Info().Int64("count", postCount).Msg("Validation PASSED: Document count matches")
+
+		// Verify sampled documents still exist
+		if len(preVal.SampleIDs) > 0 {
+			found, err := m.VerifyDocumentsExist(ctx, cfg.Database, cfg.Collection, preVal.SampleIDs)
+			if err != nil {
+				log.Warn().Err(err).Msg("post-validation: failed to verify sampled documents")
+			} else {
+				if found != int64(len(preVal.SampleIDs)) {
+					log.Error().
+						Int64("sampled", int64(len(preVal.SampleIDs))).
+						Int64("found", found).
+						Msg("VALIDATION WARNING: Some sampled documents are missing!")
+				} else {
+					log.Info().Int("sampled", len(preVal.SampleIDs)).Msg("Validation PASSED: All sampled documents exist")
+				}
+			}
+		}
+	}
+
+	// Get post-defrag stats
+	postStats, err := m.GetCollectionStats(ctx, cfg.Database, cfg.Collection)
+	if err != nil {
+		log.Warn().Err(err).Msg("post-validation: failed to get collection stats")
+	} else {
+		log.Info().Interface("stats", postStats).Msg("post-validation: collection stats")
+
+		// Compare stats if pre-validation exists
+		if preVal != nil && preVal.Stats != nil {
+			if storagePre, ok := preVal.Stats["storageSize"]; ok {
+				if storagePost, ok := postStats["storageSize"]; ok {
+					diff := storagePre - storagePost
+					log.Info().
+						Int64("pre_storage", storagePre).
+						Int64("post_storage", storagePost).
+						Int64("reduction", diff).
+						Msg("Storage size comparison")
+				}
+			}
+		}
+	}
+
+	log.Info().Msg("=== Validation Complete ===")
+	return nil
 }

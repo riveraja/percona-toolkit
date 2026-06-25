@@ -283,3 +283,115 @@ func isMongosResult(result bson.M) bool {
 	}
 	return false
 }
+
+// ValidateResult holds the results of data validation
+ type ValidateResult struct {
+	DocumentCount int64             `json:"document_count"`
+	SampleDocs    []bson.M          `json:"sample_docs,omitempty"`
+	SampleIDs     []interface{}     `json:"sample_ids,omitempty"`
+	Stats         map[string]int64  `json:"stats,omitempty"`
+}
+
+// CountDocuments returns the total number of documents in the collection
+ func (m *Mongo) CountDocuments(ctx context.Context, dbName, collName string) (int64, error) {
+	ctx, cancel := context.WithTimeout(ctx, m.metadataTimeout)
+	defer cancel()
+	return m.client.Database(dbName).Collection(collName).EstimatedDocumentCount(ctx)
+}
+
+// SampleDocuments returns a sample of document IDs from the collection
+// samplePercent is the percentage of documents to sample (1-100)
+ func (m *Mongo) SampleDocuments(ctx context.Context, dbName, collName string, samplePercent int) ([]interface{}, error) {
+	ctx, cancel := context.WithTimeout(ctx, m.commandTimeout)
+	defer cancel()
+
+	coll := m.client.Database(dbName).Collection(collName)
+	
+	// Use $sample aggregation stage for random sampling
+	pipeline := mongo.Pipeline{}
+	
+	if samplePercent < 100 {
+		// Calculate sample size based on percentage
+		// First get an estimate of total count
+		count, err := coll.EstimatedDocumentCount(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("estimate count: %w", err)
+		}
+		sampleSize := int(float64(count) * float64(samplePercent) / 100.0)
+		if sampleSize < 1 {
+			sampleSize = 1
+		}
+		pipeline = append(pipeline, bson.D{{Key: "$sample", Value: bson.D{{Key: "size", Value: sampleSize}}}})
+	}
+
+	cur, err := coll.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, fmt.Errorf("aggregate: %w", err)
+	}
+	defer cur.Close(ctx)
+
+	ids := make([]interface{}, 0, 100)
+	for cur.Next(ctx) {
+		var doc bson.M
+		if err := cur.Decode(&doc); err != nil {
+			return nil, fmt.Errorf("decode: %w", err)
+		}
+		if id, ok := doc["_id"]; ok {
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
+}
+
+// VerifyDocumentsExist checks if the given document IDs still exist in the collection
+// Returns the number of documents found
+ func (m *Mongo) VerifyDocumentsExist(ctx context.Context, dbName, collName string, ids []interface{}) (int64, error) {
+	ctx, cancel := context.WithTimeout(ctx, m.commandTimeout)
+	defer cancel()
+
+	if len(ids) == 0 {
+		return 0, nil
+	}
+
+	coll := m.client.Database(dbName).Collection(collName)
+	filter := bson.D{{Key: "_id", Value: bson.D{{Key: "$in", Value: ids}}}}
+	count, err := coll.CountDocuments(ctx, filter)
+	if err != nil {
+		return 0, fmt.Errorf("count documents: %w", err)
+	}
+	return count, nil
+}
+
+// GetCollectionStats returns storage statistics for the collection
+ func (m *Mongo) GetCollectionStats(ctx context.Context, dbName, collName string) (map[string]int64, error) {
+	ctx, cancel := context.WithTimeout(ctx, m.metadataTimeout)
+	defer cancel()
+
+	var stats map[string]interface{}
+	err := m.client.Database(dbName).RunCommand(ctx, bson.D{{Key: "collStats", Value: collName}}).Decode(&stats)
+	if err != nil {
+		// Try dbStats if collStats fails
+		err2 := m.client.Database(dbName).RunCommand(ctx, bson.D{
+			{Key: "dbStats", Value: 1},
+			{Key: "scale", Value: 1},
+		}).Decode(&stats)
+		if err2 != nil {
+			return nil, fmt.Errorf("collStats: %w, dbStats: %v", err, err2)
+		}
+	}
+
+	result := make(map[string]int64)
+	for _, key := range []string{"size", "storageSize", "totalIndexSize", "avgObjSize"} {
+		if val, ok := stats[key]; ok {
+			switch v := val.(type) {
+			case int32:
+				result[key] = int64(v)
+			case int64:
+				result[key] = v
+			case float64:
+				result[key] = int64(v)
+			}
+		}
+	}
+	return result, nil
+}

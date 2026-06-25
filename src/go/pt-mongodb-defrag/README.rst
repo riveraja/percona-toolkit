@@ -62,6 +62,8 @@ Flag                     Default          Description
 ``-quiet``               ``false``       Reduce log volume
 ``-metadata-timeout``    ``30s``        Timeout for metadata queries (``config`` DB lookups)
 ``-timeout``             ``2m``         Timeout for long-running commands (``dataSize``, ``moveRange``, ``merge``, ``split``, etc.)
+``-validate``            ``false``        Validate data integrity before and after defrag
+``-sample-percent``      ``10``           Percentage of documents to sample for validation (1-100)
 ``-version``             ``false``       Print version information and exit
 ======================== ================ =========================================================
 
@@ -127,6 +129,134 @@ Notes
 - On MongoDB 7.0+, adjacent chunks are merged automatically. Use this tool for exceptional cases.
 - Prefer running during a shard balancing window to reduce metadata-update impact on CRUD latency.
 - Cross-shard ``moveRange`` can fail with orphan cleanup timeouts. Retry after the cluster settles or use ``-allow-moves=false``.
+
+--------
+
+Data Validation
+==============
+
+Before and after running ``pt-mongodb-defrag``, it is **strongly recommended** to validate
+that no data was lost or corrupted during the defragmentation process.
+
+Automated Validation
+--------------------
+
+Use the ``-validate`` flag to automatically validate data integrity:
+
+.. code-block:: bash
+
+   pt-mongodb-defrag \
+     -uri "mongodb://mongos:27017" \
+     -namespace "app.orders" \
+     -validate \
+     -sample-percent 10
+
+The tool will:
+
+1. **Before defrag:** Record document count, sample document IDs, and collection stats
+2. **After defrag:** Verify document count matches, sampled documents still exist, and report storage changes
+
+Example output:
+
+.. code-block:: text
+
+   INFO  running pre-defrag validation...
+   INFO  pre-validation: document count 100000
+   INFO  pre-validation: sampled documents 10000
+   INFO  pre-validation: collection stats map[size:819200000 storageSize:900000000]
+   ...
+   INFO  === Post-Defrag Validation ===
+   INFO  post-validation: document count 100000
+   INFO  Validation PASSED: Document count matches
+   INFO  Validation PASSED: All sampled documents exist
+   INFO  Storage size comparison pre_storage=900000000 post_storage=750000000 reduction=150000000
+   INFO  === Validation Complete ===
+
+Manual Validation
+-----------------
+
+For additional confidence, run these MongoDB queries manually before and after defrag:
+
+**1. Document Count (MUST match):**
+
+.. code-block:: javascript
+
+   // Total document count
+   db.orders.countDocuments()
+
+**2. Storage Statistics (should improve):**
+
+.. code-block:: javascript
+
+   // Collection stats - focus on storageSize, totalIndexSize
+   db.orders.stats()
+
+**3. Chunk Distribution:**
+
+.. code-block:: javascript
+
+   // List all chunks and their data distribution
+   var chunks = db.getSiblingDB('config').chunks.find(
+     { ns: "pt_defrag.orders" }
+   ).sort({ "min.sk": 1 }).toArray();
+
+   print("Chunk analysis:");
+   chunks.forEach(c => {
+     var minKey = c.min.sk;
+     var maxKey = c.max.sk;
+     var docsInChunk = db.getSiblingDB('pt_defrag').orders.countDocuments({
+       sk: { $gte: minKey, $lt: maxKey }
+     });
+     print(`Chunk ${c._id}: shard=${c.shard}, docs=${docsInChunk}`);
+   });
+
+**4. Data Integrity Check:**
+
+.. code-block:: javascript
+
+   // Verify document structure is intact
+   db.orders.findOne()
+
+   // Sample documents across the key range
+   for (var i = 0; i < 10; i++) {
+     var skValue = i * 1000;
+     var doc = db.orders.findOne({ sk: skValue });
+     if (doc) {
+       print(`sk=${skValue}: found doc with idx=${doc.idx}`);
+     }
+   }
+
+**5. Compare Storage Efficiency:**
+
+.. code-block:: javascript
+
+   // Run and save output BEFORE defrag
+   var statsBefore = db.orders.stats();
+   print("=== BEFORE DEFRAG ===");
+   print("Storage size: " + statsBefore.storageSize);
+   print("Total index size: " + statsBefore.totalIndexSize);
+
+   // Run and compare AFTER defrag
+   var statsAfter = db.orders.stats();
+   print("=== AFTER DEFRAG ===");
+   print("Storage size: " + statsAfter.storageSize);
+   print("Total index size: " + statsAfter.totalIndexSize);
+   print("Size reduction: " + (statsBefore.storageSize - statsAfter.storageSize) + " bytes");
+
+Validation Checklist
+--------------------
+
+============ =========== =============== ==============================================
+Metric        Before      After           Expected
+============ =========== =============== ==============================================
+Document count    X            X               Must match exactly
+storageSize       X            Y               Y < X (smaller)
+totalIndexSize    X            Y               Y ≤ X
+Chunk count       X            Y               Y ≤ X (empty chunks removed)
+Empty chunks      X            Y               Y = 0 (ideally)
+============ =========== =============== ==============================================
+
+--------
 
 Authors
 =======

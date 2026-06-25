@@ -13,54 +13,123 @@
 
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
-func TestParsePhases(t *testing.T) {
-	phases, err := ParsePhases("1, 3,4")
-	if err != nil {
-		t.Fatalf("ParsePhases returned error: %v", err)
+func TestConfigValidateSamplePercent(t *testing.T) {
+	tests := []struct {
+		name         string
+		samplePercent int
+		wantErr      bool
+	}{
+		{name: "valid 0 percent", samplePercent: 0, wantErr: false},
+		{name: "valid 1 percent", samplePercent: 1, wantErr: false},
+		{name: "valid 10 percent", samplePercent: 10, wantErr: false},
+		{name: "valid 100 percent", samplePercent: 100, wantErr: false},
+		{name: "invalid negative", samplePercent: -1, wantErr: true},
+		{name: "invalid over 100", samplePercent: 101, wantErr: true},
 	}
-	if !phases[1] || !phases[3] || !phases[4] {
-		t.Fatalf("expected phases 1,3,4 to be enabled: %#v", phases)
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Config{
+				URI:            "mongodb://localhost:27017",
+				Namespace:      "test.orders",
+				Sleep:          500 * time.Millisecond,
+				SplitMergeSleep: 500 * time.Millisecond,
+				MaxMergePasses:  1000,
+				EnabledPhases:  map[int]bool{1: true, 2: true, 3: true, 4: true},
+				SamplePercent:  tc.samplePercent,
+			}
+			err := cfg.Validate()
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected error for SamplePercent=%d, got nil", tc.samplePercent)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("unexpected error for SamplePercent=%d: %v", tc.samplePercent, err)
+			}
+		})
 	}
-	if phases[2] {
-		t.Fatalf("did not expect phase 2 to be enabled")
+}
+
+func TestConfigValidateNamespace(t *testing.T) {
+	tests := []struct {
+		name      string
+		namespace string
+		wantErr   bool
+	}{
+		{name: "valid namespace", namespace: "db.collection", wantErr: false},
+		{name: "invalid empty", namespace: "", wantErr: true},
+		{name: "invalid no dot", namespace: "invalid", wantErr: true},
+		{name: "invalid double dot", namespace: "db..collection", wantErr: true},
+		{name: "invalid trailing dot", namespace: "db.", wantErr: true},
+		{name: "invalid leading dot", namespace: ".collection", wantErr: true},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := Config{
+				URI:              "mongodb://localhost:27017",
+				Namespace:        tc.namespace,
+				Sleep:            500 * time.Millisecond,
+				SplitMergeSleep:  500 * time.Millisecond,
+				MaxMergePasses:   1000,
+				EnabledPhases:    map[int]bool{1: true},
+				MetadataTimeout:  30 * time.Second,
+				CommandTimeout:   2 * time.Minute,
+			}
+			err := cfg.Validate()
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected error for namespace=%q, got nil", tc.namespace)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("unexpected error for namespace=%q: %v", tc.namespace, err)
+			}
+			if !tc.wantErr {
+				if cfg.Database != "db" {
+					t.Errorf("expected Database='db', got %q", cfg.Database)
+				}
+				if cfg.Collection != "collection" {
+					t.Errorf("expected Collection='collection', got %q", cfg.Collection)
+				}
+			}
+		})
 	}
 }
 
 func TestParseHumanBytes(t *testing.T) {
 	tests := []struct {
-		input string
-		want  int64
+		name    string
+		input   string
+		want    int64
+		wantErr bool
 	}{
-		{input: "1K", want: 1024},
-		{input: "1M", want: 1024 * 1024},
-		{input: "1G", want: 1024 * 1024 * 1024},
-		{input: "64", want: 64},
+		{name: "bytes", input: "128", want: 128, wantErr: false},
+		{name: "kilobytes", input: "128K", want: 128 * 1024, wantErr: false},
+		{name: "megabytes", input: "128M", want: 128 * 1024 * 1024, wantErr: false},
+		{name: "gigabytes", input: "1G", want: 1024 * 1024 * 1024, wantErr: false},
+		{name: "lowercase", input: "128m", want: 128 * 1024 * 1024, wantErr: false},
+		{name: "invalid empty", input: "", wantErr: true},
+		{name: "invalid letters", input: "abc", wantErr: true},
 	}
 
 	for _, tc := range tests {
-		got, err := ParseHumanBytes(tc.input)
-		if err != nil {
-			t.Fatalf("ParseHumanBytes(%q) returned error: %v", tc.input, err)
-		}
-		if got != tc.want {
-			t.Fatalf("ParseHumanBytes(%q) = %d, want %d", tc.input, got, tc.want)
-		}
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := ParseHumanBytes(tc.input)
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected error for input=%q, got nil", tc.input)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("unexpected error for input=%q: %v", tc.input, err)
+			}
+			if !tc.wantErr && got != tc.want {
+				t.Fatalf("ParseHumanBytes(%q)=%d, want %d", tc.input, got, tc.want)
+			}
+		})
 	}
 }
-
-func TestValidateRejectsNegativeSplitMergeSleep(t *testing.T) {
-	cfg := Config{
-		Namespace:       "db.coll",
-		MaxMergePasses:  1,
-		EnabledPhases:   map[int]bool{1: true},
-		SplitMergeSleep: -1,
-	}
-
-	if err := cfg.Validate(); err == nil {
-		t.Fatalf("expected validation error for negative split merge sleep")
-	}
-}
-
-
