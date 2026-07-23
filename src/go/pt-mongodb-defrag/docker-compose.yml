@@ -1,0 +1,176 @@
+# This program is copyright 2026 Percona LLC and/or its affiliates.
+#
+# THIS PROGRAM IS PROVIDED "AS IS" AND WITHOUT ANY EXPRESS OR IMPLIED
+# WARRANTIES, INCLUDING, WITHOUT LIMITATION, THE IMPLIED WARRANTIES OF
+# MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE.
+#
+# This program is free software; you can redistribute it and/or modify it under
+# the terms of the GNU General Public License as published by the Free Software
+# Foundation, version 2.
+#
+# You should have received a copy of the GNU General Public License, version 2
+# along with this program; if not, see <https://www.gnu.org/licenses/>.
+
+# docker-compose.yml
+# Sharded MongoDB cluster for pt-mongodb-defrag local testing with Authentication.
+
+version: "3.9"
+
+x-mongod:
+  &mongod
+  image: ${TEST_MONGODB_IMAGE:-percona/percona-server-mongodb:8.0}
+  restart: unless-stopped
+  networks:
+    - pt-defrag-net
+  entrypoint: [ "/scripts/entrypoint.sh" ]
+
+services:
+  # ---------------------------------------------------------------------------
+  # Config server replica set  (3 members)
+  # ---------------------------------------------------------------------------
+  cfg-1:
+    <<: *mongod
+    container_name: pt-defrag-cfg-1
+    command: mongod --config /etc/mongod.conf
+    volumes:
+      - ../docker/test/mongod.key:/etc/mongo-raw/mongod.key:ro
+      - ./docker/scripts:/scripts:ro
+      - ./docker/config/cfg.conf:/etc/mongod.conf:ro
+    ports:
+      - "${PT_DEFRAG_CFG1_PORT:-30001}:27017"
+
+  cfg-2:
+    <<: *mongod
+    container_name: pt-defrag-cfg-2
+    command: mongod --config /etc/mongod.conf
+    volumes:
+      - ../docker/test/mongod.key:/etc/mongo-raw/mongod.key:ro
+      - ./docker/scripts:/scripts:ro
+      - ./docker/config/cfg.conf:/etc/mongod.conf:ro
+    ports:
+      - "${PT_DEFRAG_CFG2_PORT:-30002}:27017"
+
+  cfg-3:
+    <<: *mongod
+    container_name: pt-defrag-cfg-3
+    command: mongod --config /etc/mongod.conf
+    volumes:
+      - ../docker/test/mongod.key:/etc/mongo-raw/mongod.key:ro
+      - ./docker/scripts:/scripts:ro
+      - ./docker/config/cfg.conf:/etc/mongod.conf:ro
+    ports:
+      - "${PT_DEFRAG_CFG3_PORT:-30003}:27017"
+
+  # ---------------------------------------------------------------------------
+  # Shard 1 replica set  (3 members)
+  # ---------------------------------------------------------------------------
+  rs1-1:
+    <<: *mongod
+    container_name: pt-defrag-rs1-1
+    command: mongod --config /etc/mongod.conf
+    volumes:
+      - ../docker/test/mongod.key:/etc/mongo-raw/mongod.key:ro
+      - ./docker/scripts:/scripts:ro
+      - ./docker/config/rs1.conf:/etc/mongod.conf:ro
+    ports:
+      - "${PT_DEFRAG_RS1_PRIMARY:-30011}:27017"
+
+  rs1-2:
+    <<: *mongod
+    container_name: pt-defrag-rs1-2
+    command: mongod --config /etc/mongod.conf
+    volumes:
+      - ../docker/test/mongod.key:/etc/mongo-raw/mongod.key:ro
+      - ./docker/scripts:/scripts:ro
+      - ./docker/config/rs1.conf:/etc/mongod.conf:ro
+    ports:
+      - "${PT_DEFRAG_RS1_SECONDARY1:-30012}:27017"
+
+  rs1-3:
+    <<: *mongod
+    container_name: pt-defrag-rs1-3
+    command: mongod --config /etc/mongod.conf
+    volumes:
+      - ../docker/test/mongod.key:/etc/mongo-raw/mongod.key:ro
+      - ./docker/scripts:/scripts:ro
+      - ./docker/config/rs1.conf:/etc/mongod.conf:ro
+    ports:
+      - "${PT_DEFRAG_RS1_SECONDARY2:-30013}:27017"
+
+  # ---------------------------------------------------------------------------
+  # Shard 2 replica set  (3 members)
+  # ---------------------------------------------------------------------------
+  rs2-1:
+    <<: *mongod
+    container_name: pt-defrag-rs2-1
+    command: mongod --config /etc/mongod.conf
+    volumes:
+      - ../docker/test/mongod.key:/etc/mongo-raw/mongod.key:ro
+      - ./docker/scripts:/scripts:ro
+      - ./docker/config/rs2.conf:/etc/mongod.conf:ro
+    ports:
+      - "${PT_DEFRAG_RS2_PRIMARY:-30021}:27017"
+
+  rs2-2:
+    <<: *mongod
+    container_name: pt-defrag-rs2-2
+    command: mongod --config /etc/mongod.conf
+    volumes:
+      - ../docker/test/mongod.key:/etc/mongo-raw/mongod.key:ro
+      - ./docker/scripts:/scripts:ro
+      - ./docker/config/rs2.conf:/etc/mongod.conf:ro
+    ports:
+      - "${PT_DEFRAG_RS2_SECONDARY1:-30022}:27017"
+
+  rs2-3:
+    <<: *mongod
+    container_name: pt-defrag-rs2-3
+    command: mongod --config /etc/mongod.conf
+    volumes:
+      - ../docker/test/mongod.key:/etc/mongo-raw/mongod.key:ro
+      - ./docker/scripts:/scripts:ro
+      - ./docker/config/rs2.conf:/etc/mongod.conf:ro
+    ports:
+      - "${PT_DEFRAG_RS2_SECONDARY2:-30023}:27017"
+
+  # ---------------------------------------------------------------------------
+  # Mongos (query router)
+  # ---------------------------------------------------------------------------
+  mongos:
+    container_name: pt-defrag-mongos
+    image: ${TEST_MONGODB_IMAGE:-percona/percona-server-mongodb:8.0}
+    restart: unless-stopped
+    networks:
+      - pt-defrag-net
+    ports:
+      - "${PT_DEFRAG_MONGOS_PORT:-30000}:27017"
+    depends_on:
+      - cfg-1
+      - cfg-2
+      - cfg-3
+    volumes:
+      - ./scripts:/tool-scripts:ro
+      - ../docker/test/mongod.key:/etc/mongo-raw/mongod.key:ro
+      - ./docker/scripts:/scripts:ro
+      - ./docker/config/mongos.conf:/etc/mongod.conf:ro
+    entrypoint: [ "/scripts/entrypoint.sh" ]
+    command: mongos --config /etc/mongod.conf
+
+  # ---------------------------------------------------------------------------
+  # Cluster initializer — runs once to set up replica sets, shards, and users
+  # ---------------------------------------------------------------------------
+  setup:
+    container_name: pt-defrag-setup
+    image: ${TEST_MONGODB_IMAGE:-percona/percona-server-mongodb:8.0}
+    networks:
+      - pt-defrag-net
+    depends_on:
+      - mongos
+    volumes:
+      - ./docker/scripts:/scripts:ro
+    entrypoint: [ "/scripts/setup.sh" ]
+    restart: "no"
+
+networks:
+  pt-defrag-net:
+    driver: bridge
